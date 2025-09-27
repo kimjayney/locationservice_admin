@@ -224,5 +224,37 @@ def read_s3_logs():
             
     return jsonify(logs_content)
 
+# D1 데이터베이스에 직접 쿼리를 실행하는 API 엔드포인트
+@app.route('/api/d1/execute-query', methods=['POST'])
+def execute_d1_query():
+    cf_api_token = os.getenv('CF_API_TOKEN')
+    cf_account_id = os.getenv('CF_ACCOUNT_ID')
+    cf_d1_database_id = os.getenv('CF_D1_DATABASE_ID')
+
+    if not all([cf_api_token, cf_account_id, cf_d1_database_id]):
+        return jsonify({'error': 'Server configuration error: API token, Account ID, or D1 Database ID is missing.'}), 500
+
+    # 클라이언트로부터 SQL 쿼리를 받습니다.
+    sql_query = request.json.get('sql')
+    if not sql_query:
+        return jsonify({'error': 'SQL query is missing.'}), 400
+
+    api_url = f"https://api.cloudflare.com/client/v4/accounts/{cf_account_id}/d1/database/{cf_d1_database_id}/query"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cf_api_token}",
+    }
+    
+    data = {"sql": sql_query}
+
+    try:
+        response = requests.post(api_url, headers=headers, json=data)
+        response.raise_for_status()
+        return jsonify(response.json())
+    except requests.exceptions.RequestException as e:
+        print(f"Error executing D1 query: {e}")
+        return jsonify({'error': str(e), 'details': response.text if 'response' in locals() else 'No response'}), 500
+
 if __name__ == '__main__':
     app.run(port=3000, debug=True)

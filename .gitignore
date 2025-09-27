@@ -1,2 +1,4 @@
 .env
 s3_downloads
+*.json
+venv
