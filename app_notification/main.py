@@ -119,7 +119,7 @@ def check_and_notify_inactive_devices():
             WHERE
                 d.setAllowNoti = 1
                 -- d.last_updated가 UTC 기준이므로, UTC를 반환하는 datetime('now')와 직접 비교합니다.
-                AND d.last_updated < datetime('now', '-30 minutes') 
+                AND d.last_updated < datetime('now', '-60 minutes') 
                 AND drn.DeviceId IS NOT NULL
             GROUP BY drn.DeviceId
         """
