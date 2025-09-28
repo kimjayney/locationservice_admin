@@ -105,8 +105,24 @@ def check_and_notify_inactive_devices():
     notification_results = []
     try:
         # 1. DeviceRelationNoti 테이블에서 모든 관계(DeviceId, toDeviceId) 목록을 가져옵니다.
-        # 가정: DeviceRelationNoti 테이블은 DeviceId (TEXT)와 toDeviceId (TEXT) 컬럼을 가집니다.
-        relation_query = "SELECT DeviceId, toDeviceId FROM DeviceRelationNoti"
+        #    - 알림 설정이 켜져 있고(d.setAllowNoti = 1),
+        #    - 마지막 업데이트(d.last_updated)가 1시간 이상 지난 fromDeviceId를 찾습니다.
+        #    - 관련된 toDeviceId들을 쉼표로 묶어서 가져옵니다.
+        relation_query = """
+            SELECT
+                drn.DeviceId,
+                GROUP_CONCAT(DISTINCT drn.toDeviceId) AS toDeviceIds
+            FROM
+                DeviceRelationNoti AS drn
+            JOIN
+                Devices AS d ON drn.DeviceId = d.id
+            WHERE
+                d.setAllowNoti = 1
+                -- d.last_updated가 UTC 기준이므로, UTC를 반환하는 datetime('now')와 직접 비교합니다.
+                AND d.last_updated < datetime('now', '-30 minutes') 
+                AND drn.DeviceId IS NOT NULL
+            GROUP BY drn.DeviceId
+        """
         relation_cf_response = _call_d1_api(relation_query)
         
         device_relations = []
@@ -119,42 +135,18 @@ def check_and_notify_inactive_devices():
 
         for relation in device_relations:
             from_device_id = relation.get('DeviceId')
-            target_device_id = relation.get('toDeviceId')
+            # 쉼표로 구분된 toDeviceIds 문자열을 리스트로 변환합니다.
+            to_device_ids_str = relation.get('toDeviceIds')
 
-            if not all([from_device_id, target_device_id]):
+            if not all([from_device_id, to_device_ids_str]):
                 continue
+            
+            target_device_ids = to_device_ids_str.split(',')
 
-            # 2. Locations 테이블에서 from_device_id의 마지막 created_at을 가져옵니다.
-            # 가정: Locations 테이블은 DeviceId (TEXT)와 created_at (TEXT) 컬럼을 가집니다.
-            location_query = f"SELECT created_at FROM Locations WHERE DeviceId = '{from_device_id}' ORDER BY created_at DESC LIMIT 1"
-            location_cf_response = _call_d1_api(location_query)
-
-            last_created_at_str = None
-            if location_cf_response.get('result') and location_cf_response['result'] and location_cf_response['result'][0].get('results'):
-                last_created_at_str = location_cf_response['result'][0]['results'][0]['created_at']
-
-            if not last_created_at_str:
-                notification_results.append({
-                    'toDeviceId': target_device_id,
-                    'status': 'skipped',
-                    'reason': f'No location data found for from_device_id: {from_device_id}.'
-                })
-                continue
-
-            # created_at 시간을 파싱하고 1시간 이상 경과했는지 확인합니다.
-            try:
-                # ISO 8601 형식 (예: '2025-09-26T14:13:00.158Z') 파싱 시도
-                last_created_at = datetime.strptime(last_created_at_str, '%Y-%m-%dT%H:%M:%S.%fZ')
-            except ValueError:
-                # 일반적인 'YYYY-MM-DD HH:MM:SS' 형식 파싱 (fallback)
-                last_created_at = datetime.strptime(last_created_at_str, '%Y-%m-%d %H:%M:%S')
-
-            one_hour_ago = datetime.utcnow() - timedelta(hours=1)
-
-            if last_created_at < one_hour_ago:
-                # 3. Devices 테이블에서 toDeviceId의 notiToken을 가져옵니다.
-                # 가정: Devices 테이블은 id (TEXT)와 notiToken (TEXT) 컬럼을 가집니다.
-                device_query = f"SELECT notiToken FROM Devices WHERE id = '{target_device_id}' and setAllowNoti = 1"
+            # 2. 각 target_device_id에 대해 알림을 보냅니다.
+            for target_device_id in target_device_ids:
+                # Devices 테이블에서 toDeviceId의 notiToken을 가져옵니다.
+                device_query = f"SELECT notiToken FROM Devices WHERE id = '{target_device_id}'"
                 device_cf_response = _call_d1_api(device_query)
 
                 noti_token = None
@@ -169,12 +161,12 @@ def check_and_notify_inactive_devices():
                     })
                     continue
 
-                # 4. FCM 알림을 전송합니다.
+                # 3. FCM 알림을 전송합니다.
                 try:
                     message = messaging.Message(
                         notification=messaging.Notification(
                             title="활동 알림",
-                            body=f"연결된 기기({from_device_id})가 1시간 이상 활동이 없습니다."
+                            body=f"연결된 기기({from_device_id})가 30분 이상 활동이 없습니다."
                         ),
                         token=noti_token,
                     )
@@ -182,8 +174,6 @@ def check_and_notify_inactive_devices():
                     notification_results.append({'toDeviceId': target_device_id, 'status': 'sent', 'messageId': fcm_response})
                 except Exception as fcm_e:
                     notification_results.append({'toDeviceId': target_device_id, 'status': 'failed_fcm', 'error': str(fcm_e)})
-            else:
-                notification_results.append({'toDeviceId': target_device_id, 'status': 'skipped', 'reason': 'Last activity within 1 hour.'})
 
     except (requests.exceptions.RequestException, ValueError) as e:
         print(f"Error in check_and_notify_inactive_devices: {e}")
