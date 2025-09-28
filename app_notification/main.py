@@ -166,7 +166,7 @@ def check_and_notify_inactive_devices():
                     message = messaging.Message(
                         notification=messaging.Notification(
                             title="활동 알림",
-                            body=f"연결된 기기({from_device_id})가 30분 이상 활동이 없습니다."
+                            body=f"연결된 기기({from_device_id})가 1시간 이상 활동이 없습니다."
                         ),
                         token=noti_token,
                     )
